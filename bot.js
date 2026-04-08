@@ -20,6 +20,27 @@ const client = new Client({
   ],
 });
 
+// ─── HELPER: get leaderboard rank for a user ───
+async function getLeaderboardRank(userId) {
+  try {
+    const res = await fetch(`${WORKER_URL}/leaderboard`);
+    const data = await res.json();
+    if (!data.entries || !data.entries.length) return null;
+    const rank = data.entries.findIndex(e => e.userId === userId);
+    if (rank === -1) return null;
+    return { rank: rank + 1, total: data.entries.length };
+  } catch {
+    return null;
+  }
+}
+
+function rankLabel(rank) {
+  if (!rank) return '—';
+  const medals = { 1: '🥇', 2: '🥈', 3: '🥉' };
+  const suffix = rank.rank <= 3 ? medals[rank.rank] : `#${rank.rank}`;
+  return `${suffix} of ${rank.total}`;
+}
+
 // ─── CLOCK IN / OUT ───
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
@@ -54,6 +75,9 @@ client.on(Events.MessageCreate, async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
+    // Fetch rank after clocking in
+    const rank = await getLeaderboardRank(user.id);
+
     const embed = new EmbedBuilder()
       .setColor(0x00c864)
       .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
@@ -61,6 +85,7 @@ client.on(Events.MessageCreate, async (message) => {
       .setDescription('Your training session has started. Type `!clockout` when you\'re done.')
       .addFields(
         { name: '📊 All-Time Total', value: formatMins(data.previousTotal), inline: true },
+        { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
       )
       .setTimestamp()
       .setFooter({ text: 'PORTAL · Training Tracker' });
@@ -88,6 +113,9 @@ client.on(Events.MessageCreate, async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
+    // Fetch rank after clocking out (totals now updated)
+    const rank = await getLeaderboardRank(user.id);
+
     const embed = new EmbedBuilder()
       .setColor(0xd4001a)
       .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
@@ -96,6 +124,7 @@ client.on(Events.MessageCreate, async (message) => {
       .addFields(
         { name: '⏱ This Session', value: formatMins(data.sessionMins), inline: true },
         { name: '📊 All-Time Total', value: formatMins(data.totalMins), inline: true },
+        { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
       )
       .setTimestamp()
       .setFooter({ text: 'PORTAL · Training Tracker' });
@@ -109,6 +138,8 @@ client.on(Events.MessageCreate, async (message) => {
     const res = await fetch(`${WORKER_URL}/clock-history?userId=${user.id}`);
     const data = await res.json();
 
+    const rank = await getLeaderboardRank(user.id);
+
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
@@ -116,6 +147,7 @@ client.on(Events.MessageCreate, async (message) => {
       .addFields(
         { name: '⏳ All-Time Total', value: formatMins(data.totalMins), inline: true },
         { name: '🟢 Status', value: data.clockedIn ? `Clocked in (${formatMins(data.liveMins)} this session)` : 'Not clocked in', inline: true },
+        { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
       )
       .setTimestamp()
       .setFooter({ text: 'PORTAL · Training Tracker' });
