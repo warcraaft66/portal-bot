@@ -1,13 +1,13 @@
 // ─── PORTAL Discord Bot ───
-// npm install discord.js node-fetch
-// Set env vars: DISCORD_TOKEN, WORKER_URL, GUILD_ID, VOICE_CHANNEL_ID (optional: specific channel to watch)
+// Env vars: DISCORD_TOKEN, WORKER_URL, GUILD_ID, LOG_CHANNEL_ID (optional)
 
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
-const WORKER_URL       = process.env.WORKER_URL;       // e.g. https://dry-snowflake-f0e8...workers.dev
-const GUILD_ID         = process.env.GUILD_ID;         // your Discord server ID
-const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID; // optional: only watch this channel ID (leave blank for all)
+const WORKER_URL       = process.env.WORKER_URL;
+const GUILD_ID         = process.env.GUILD_ID;
+const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
+const LOG_CHANNEL_ID   = process.env.LOG_CHANNEL_ID; // optional: set in Railway vars to post embeds to a specific channel
 
 const client = new Client({
   intents: [
@@ -16,6 +16,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences,
   ],
 });
 
@@ -27,6 +28,7 @@ client.on(Events.MessageCreate, async (message) => {
   const cmd = message.content.trim().toLowerCase();
   const user = message.author;
 
+  // ── CLOCK IN ──
   if (cmd === '!clockin' || cmd === 'clock in') {
     const res = await fetch(`${WORKER_URL}/clockin`, {
       method: 'POST',
@@ -41,13 +43,33 @@ client.on(Events.MessageCreate, async (message) => {
       }),
     });
     const data = await res.json();
+
     if (data.alreadyClockedIn) {
-      message.reply(`⏱ You're already clocked in! Clock out first with \`!clockout\`.`);
-    } else {
-      message.reply(`✅ Clocked in! Your previous total: **${formatMins(data.previousTotal)}**. Good session!`);
+      const embed = new EmbedBuilder()
+        .setColor(0xf5c842)
+        .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+        .setTitle('⚠️ Already Clocked In')
+        .setDescription('You are already clocked in. Use `!clockout` to stop your session.')
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
     }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00c864)
+      .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+      .setTitle('✅ Successfully Clocked In')
+      .setDescription('Your training session has started. Type `!clockout` when you\'re done.')
+      .addFields(
+        { name: '📊 All-Time Total', value: formatMins(data.previousTotal), inline: true },
+      )
+      .setTimestamp()
+      .setFooter({ text: 'PORTAL · Training Tracker' });
+
+    message.reply({ embeds: [embed] });
+    postToLogChannel(message.guild, embed);
   }
 
+  // ── CLOCK OUT ──
   if (cmd === '!clockout' || cmd === 'clock out') {
     const res = await fetch(`${WORKER_URL}/clockout`, {
       method: 'POST',
@@ -55,66 +77,109 @@ client.on(Events.MessageCreate, async (message) => {
       body: JSON.stringify({ userId: user.id }),
     });
     const data = await res.json();
+
     if (!data.wasClockedIn) {
-      message.reply(`❌ You weren't clocked in. Use \`!clockin\` to start.`);
-    } else {
-      message.reply(
-        `🏁 Clocked out! Session: **${formatMins(data.sessionMins)}** · All-time total: **${formatMins(data.totalMins)}**`
-      );
+      const embed = new EmbedBuilder()
+        .setColor(0xff4455)
+        .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+        .setTitle('❌ Not Clocked In')
+        .setDescription('You weren\'t clocked in. Use `!clockin` to start a session.')
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
     }
+
+    const embed = new EmbedBuilder()
+      .setColor(0xd4001a)
+      .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+      .setTitle('🏁 Clocked Out')
+      .setDescription('Session ended. Great work!')
+      .addFields(
+        { name: '⏱ This Session', value: formatMins(data.sessionMins), inline: true },
+        { name: '📊 All-Time Total', value: formatMins(data.totalMins), inline: true },
+      )
+      .setTimestamp()
+      .setFooter({ text: 'PORTAL · Training Tracker' });
+
+    message.reply({ embeds: [embed] });
+    postToLogChannel(message.guild, embed);
   }
 
+  // ── MY TIME ──
   if (cmd === '!mytime') {
     const res = await fetch(`${WORKER_URL}/clock-history?userId=${user.id}`);
     const data = await res.json();
-    message.reply(
-      `📊 Your all-time training time: **${formatMins(data.totalMins)}**${data.clockedIn ? ' _(currently clocked in)_' : ''}`
-    );
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+      .setTitle('📊 Your Training Time')
+      .addFields(
+        { name: '⏳ All-Time Total', value: formatMins(data.totalMins), inline: true },
+        { name: '🟢 Status', value: data.clockedIn ? `Clocked in (${formatMins(data.liveMins)} this session)` : 'Not clocked in', inline: true },
+      )
+      .setTimestamp()
+      .setFooter({ text: 'PORTAL · Training Tracker' });
+
+    message.reply({ embeds: [embed] });
   }
 
+  // ── LEADERBOARD ──
   if (cmd === '!leaderboard') {
     const res = await fetch(`${WORKER_URL}/leaderboard`);
     const data = await res.json();
+
     if (!data.entries || !data.entries.length) {
-      message.reply('No data yet — be the first to `!clockin`!');
-      return;
+      return message.reply('No data yet — be the first to `!clockin`!');
     }
+
+    const medals = ['🥇', '🥈', '🥉'];
     const lines = data.entries
       .slice(0, 10)
-      .map((e, i) => `${['🥇','🥈','🥉'][i] || `${i+1}.`} **${e.globalName || e.username}** — ${formatMins(e.totalMins)}`);
-    message.reply(`**Training Leaderboard**\n${lines.join('\n')}`);
+      .map((e, i) => `${medals[i] || `${i + 1}.`} **${e.globalName || e.username}** — ${formatMins(e.totalMins)}${e.clockedIn ? ' 🟢' : ''}`);
+
+    const embed = new EmbedBuilder()
+      .setColor(0xf5c842)
+      .setTitle('🏆 Training Leaderboard')
+      .setDescription(lines.join('\n'))
+      .setTimestamp()
+      .setFooter({ text: 'PORTAL · Training Tracker · 🟢 = currently clocked in' });
+
+    message.reply({ embeds: [embed] });
   }
 });
 
+// ─── POST TO LOG CHANNEL (if LOG_CHANNEL_ID is set) ───
+async function postToLogChannel(guild, embed) {
+  if (!LOG_CHANNEL_ID) return;
+  try {
+    const channel = guild.channels.cache.get(LOG_CHANNEL_ID);
+    if (channel) channel.send({ embeds: [embed] });
+  } catch {}
+}
+
 // ─── VOICE STATE TRACKING ───
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
-  const userId   = newState.member?.id || oldState.member?.id;
-  const username = newState.member?.user?.username || oldState.member?.user?.username;
+  const userId     = newState.member?.id || oldState.member?.id;
+  const username   = newState.member?.user?.username || oldState.member?.user?.username;
   const globalName = newState.member?.user?.globalName || username;
-  const avatar   = newState.member?.user?.avatar
+  const avatar     = newState.member?.user?.avatar
     ? `https://cdn.discordapp.com/avatars/${userId}/${newState.member.user.avatar}.png`
     : null;
 
   if (!userId) return;
 
-  const channelId  = newState.channelId;
+  const channelId   = newState.channelId;
   const isStreaming = newState.streaming;
   const isVideo     = newState.selfVideo;
   const channelName = newState.channel?.name || null;
 
-  // Filter to specific channel if configured
   if (VOICE_CHANNEL_ID && channelId && channelId !== VOICE_CHANNEL_ID) return;
 
-  // Joined a voice channel
   if (!oldState.channelId && newState.channelId) {
     await postVoiceState({ userId, username, globalName, avatar, channelId, channelName, streaming: isStreaming, video: isVideo, action: 'join' });
-  }
-  // Left a voice channel
-  else if (oldState.channelId && !newState.channelId) {
+  } else if (oldState.channelId && !newState.channelId) {
     await postVoiceState({ userId, username, globalName, avatar, channelId: null, channelName: null, streaming: false, video: false, action: 'leave' });
-  }
-  // Changed state (started/stopped streaming, switched channel)
-  else if (newState.channelId) {
+  } else if (newState.channelId) {
     await postVoiceState({ userId, username, globalName, avatar, channelId, channelName, streaming: isStreaming, video: isVideo, action: 'update' });
   }
 });
@@ -131,8 +196,7 @@ async function postVoiceState(payload) {
   }
 }
 
-// ─── PERIODIC SYNC: push current voice state snapshot every 30s ───
-// This handles cases where the bot restarts mid-session
+// ─── PERIODIC VOICE SNAPSHOT ───
 async function syncVoiceSnapshot() {
   try {
     const guild = client.guilds.cache.get(GUILD_ID);
