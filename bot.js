@@ -1,13 +1,8 @@
-// ─── PORTAL Discord Bot ───
-// Env vars: DISCORD_TOKEN, WORKER_URL, GUILD_ID, LOG_CHANNEL_ID (optional)
-
 const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
-const WORKER_URL       = process.env.WORKER_URL;
-const GUILD_ID         = process.env.GUILD_ID;
-const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
-const LOG_CHANNEL_ID   = process.env.LOG_CHANNEL_ID;
+const WORKER_URL     = process.env.WORKER_URL;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 
 const client = new Client({
   intents: [
@@ -28,7 +23,10 @@ async function getLeaderboardRank(userId) {
     const rank = data.entries.findIndex(e => e.userId === userId);
     if (rank === -1) return null;
     return { rank: rank + 1, total: data.entries.length };
-  } catch { return null; }
+  } catch (e) {
+    console.error('getLeaderboardRank error:', e);
+    return null;
+  }
 }
 
 function rankLabel(rank) {
@@ -40,132 +38,157 @@ function rankLabel(rank) {
 
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
-  if (message.guildId !== GUILD_ID) return;
 
   const cmd = message.content.trim().toLowerCase();
   const user = message.author;
 
+  console.log(`Message received: "${cmd}" from ${user.username}`);
+
   // ── CLOCK IN ──
-  if (cmd === '!clockin' || cmd === 'clock in') {
-    const res = await fetch(`${WORKER_URL}/clockin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId: user.id,
-        username: user.username,
-        globalName: user.globalName || user.username,
-        avatar: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` : null,
-      }),
-    });
-    const data = await res.json();
+  if (cmd === '!clockin') {
+    console.log(`Clocking in ${user.username}`);
+    try {
+      const res = await fetch(`${WORKER_URL}/clockin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.id,
+          username: user.username,
+          globalName: user.globalName || user.username,
+          avatar: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` : null,
+        }),
+      });
+      const data = await res.json();
+      console.log('Clockin response:', JSON.stringify(data));
 
-    if (data.alreadyClockedIn) {
+      if (data.alreadyClockedIn) {
+        const embed = new EmbedBuilder()
+          .setColor(0xf5c842)
+          .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+          .setTitle('⚠️ Already Clocked In')
+          .setDescription('You are already clocked in. Use `!clockout` to stop your session.')
+          .setTimestamp();
+        return message.reply({ embeds: [embed] });
+      }
+
+      const rank = await getLeaderboardRank(user.id);
       const embed = new EmbedBuilder()
-        .setColor(0xf5c842)
+        .setColor(0x00c864)
         .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-        .setTitle('⚠️ Already Clocked In')
-        .setDescription('You are already clocked in. Use `!clockout` to stop your session.')
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
+        .setTitle('✅ Successfully Clocked In')
+        .setDescription('Your training session has started. Type `!clockout` when you\'re done.')
+        .addFields(
+          { name: '📊 All-Time Total', value: formatMins(data.previousTotal), inline: true },
+          { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
+        )
+        .setTimestamp()
+        .setFooter({ text: 'PORTAL · Training Tracker' });
+
+      await message.reply({ embeds: [embed] });
+      postToLogChannel(message.guild, embed);
+    } catch (e) {
+      console.error('Clockin error:', e);
+      message.reply('Something went wrong. Check the logs.');
     }
-
-    const rank = await getLeaderboardRank(user.id);
-    const embed = new EmbedBuilder()
-      .setColor(0x00c864)
-      .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-      .setTitle('✅ Successfully Clocked In')
-      .setDescription('Your training session has started. Type `!clockout` when you\'re done.')
-      .addFields(
-        { name: '📊 All-Time Total', value: formatMins(data.previousTotal), inline: true },
-        { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
-      )
-      .setTimestamp()
-      .setFooter({ text: 'PORTAL · Training Tracker' });
-
-    message.reply({ embeds: [embed] });
-    postToLogChannel(message.guild, embed);
   }
 
   // ── CLOCK OUT ──
-  if (cmd === '!clockout' || cmd === 'clock out') {
-    const res = await fetch(`${WORKER_URL}/clockout`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.id }),
-    });
-    const data = await res.json();
+  if (cmd === '!clockout') {
+    console.log(`Clocking out ${user.username}`);
+    try {
+      const res = await fetch(`${WORKER_URL}/clockout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const data = await res.json();
+      console.log('Clockout response:', JSON.stringify(data));
 
-    if (!data.wasClockedIn) {
+      if (!data.wasClockedIn) {
+        const embed = new EmbedBuilder()
+          .setColor(0xff4455)
+          .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+          .setTitle('❌ Not Clocked In')
+          .setDescription('You weren\'t clocked in. Use `!clockin` to start a session.')
+          .setTimestamp();
+        return message.reply({ embeds: [embed] });
+      }
+
+      const rank = await getLeaderboardRank(user.id);
       const embed = new EmbedBuilder()
-        .setColor(0xff4455)
+        .setColor(0xd4001a)
         .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-        .setTitle('❌ Not Clocked In')
-        .setDescription('You weren\'t clocked in. Use `!clockin` to start a session.')
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
+        .setTitle('🏁 Clocked Out')
+        .setDescription('Session ended. Great work!')
+        .addFields(
+          { name: '⏱ This Session', value: formatMins(data.sessionMins), inline: true },
+          { name: '📊 All-Time Total', value: formatMins(data.totalMins), inline: true },
+          { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
+        )
+        .setTimestamp()
+        .setFooter({ text: 'PORTAL · Training Tracker' });
+
+      await message.reply({ embeds: [embed] });
+      postToLogChannel(message.guild, embed);
+    } catch (e) {
+      console.error('Clockout error:', e);
+      message.reply('Something went wrong. Check the logs.');
     }
-
-    const rank = await getLeaderboardRank(user.id);
-    const embed = new EmbedBuilder()
-      .setColor(0xd4001a)
-      .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-      .setTitle('🏁 Clocked Out')
-      .setDescription('Session ended. Great work!')
-      .addFields(
-        { name: '⏱ This Session', value: formatMins(data.sessionMins), inline: true },
-        { name: '📊 All-Time Total', value: formatMins(data.totalMins), inline: true },
-        { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
-      )
-      .setTimestamp()
-      .setFooter({ text: 'PORTAL · Training Tracker' });
-
-    message.reply({ embeds: [embed] });
-    postToLogChannel(message.guild, embed);
   }
 
   // ── MY TIME ──
   if (cmd === '!mytime') {
-    const res = await fetch(`${WORKER_URL}/clock-history?userId=${user.id}`);
-    const data = await res.json();
-    const rank = await getLeaderboardRank(user.id);
+    try {
+      const res = await fetch(`${WORKER_URL}/clock-history?userId=${user.id}`);
+      const data = await res.json();
+      const rank = await getLeaderboardRank(user.id);
 
-    const embed = new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-      .setTitle('📊 Your Training Time')
-      .addFields(
-        { name: '⏳ All-Time Total', value: formatMins(data.totalMins), inline: true },
-        { name: '🟢 Status', value: data.clockedIn ? `Clocked in (${formatMins(data.liveMins)} this session)` : 'Not clocked in', inline: true },
-        { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
-      )
-      .setTimestamp()
-      .setFooter({ text: 'PORTAL · Training Tracker' });
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+        .setTitle('📊 Your Training Time')
+        .addFields(
+          { name: '⏳ All-Time Total', value: formatMins(data.totalMins), inline: true },
+          { name: '🟢 Status', value: data.clockedIn ? `Clocked in (${formatMins(data.liveMins)} this session)` : 'Not clocked in', inline: true },
+          { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
+        )
+        .setTimestamp()
+        .setFooter({ text: 'PORTAL · Training Tracker' });
 
-    message.reply({ embeds: [embed] });
+      await message.reply({ embeds: [embed] });
+    } catch (e) {
+      console.error('Mytime error:', e);
+      message.reply('Something went wrong. Check the logs.');
+    }
   }
 
   // ── LEADERBOARD ──
   if (cmd === '!leaderboard') {
-    const res = await fetch(`${WORKER_URL}/leaderboard`);
-    const data = await res.json();
+    try {
+      const res = await fetch(`${WORKER_URL}/leaderboard`);
+      const data = await res.json();
 
-    if (!data.entries || !data.entries.length) {
-      return message.reply('No data yet — be the first to `!clockin`!');
+      if (!data.entries || !data.entries.length) {
+        return message.reply('No data yet — be the first to `!clockin`!');
+      }
+
+      const medals = ['🥇', '🥈', '🥉'];
+      const lines = data.entries
+        .slice(0, 10)
+        .map((e, i) => `${medals[i] || `${i + 1}.`} **${e.globalName || e.username}** — ${formatMins(e.totalMins)}${e.clockedIn ? ' 🟢' : ''}`);
+
+      const embed = new EmbedBuilder()
+        .setColor(0xf5c842)
+        .setTitle('🏆 Training Leaderboard')
+        .setDescription(lines.join('\n'))
+        .setTimestamp()
+        .setFooter({ text: 'PORTAL · Training Tracker · 🟢 = currently clocked in' });
+
+      await message.reply({ embeds: [embed] });
+    } catch (e) {
+      console.error('Leaderboard error:', e);
+      message.reply('Something went wrong. Check the logs.');
     }
-
-    const medals = ['🥇', '🥈', '🥉'];
-    const lines = data.entries
-      .slice(0, 10)
-      .map((e, i) => `${medals[i] || `${i + 1}.`} **${e.globalName || e.username}** — ${formatMins(e.totalMins)}${e.clockedIn ? ' 🟢' : ''}`);
-
-    const embed = new EmbedBuilder()
-      .setColor(0xf5c842)
-      .setTitle('🏆 Training Leaderboard')
-      .setDescription(lines.join('\n'))
-      .setTimestamp()
-      .setFooter({ text: 'PORTAL · Training Tracker · 🟢 = currently clocked in' });
-
-    message.reply({ embeds: [embed] });
   }
 });
 
@@ -191,8 +214,6 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   const isVideo     = newState.selfVideo;
   const channelName = newState.channel?.name || null;
 
-  if (VOICE_CHANNEL_ID && channelId && channelId !== VOICE_CHANNEL_ID) return;
-
   if (!oldState.channelId && newState.channelId) {
     await postVoiceState({ userId, username, globalName, avatar, channelId, channelName, streaming: isStreaming, video: isVideo, action: 'join' });
   } else if (oldState.channelId && !newState.channelId) {
@@ -209,26 +230,26 @@ async function postVoiceState(payload) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-  } catch (e) { console.error('Failed to post voice state:', e); }
+  } catch (e) { console.error('Voice state error:', e); }
 }
 
 async function syncVoiceSnapshot() {
   try {
-    const guild = client.guilds.cache.get(GUILD_ID);
-    if (!guild) return;
+    const guilds = client.guilds.cache;
     const members = [];
-    guild.voiceStates.cache.forEach((vs) => {
-      if (!vs.channelId) return;
-      if (VOICE_CHANNEL_ID && vs.channelId !== VOICE_CHANNEL_ID) return;
-      members.push({
-        userId:      vs.member?.id,
-        username:    vs.member?.user?.username,
-        globalName:  vs.member?.user?.globalName || vs.member?.user?.username,
-        avatar:      vs.member?.user?.avatar ? `https://cdn.discordapp.com/avatars/${vs.member.id}/${vs.member.user.avatar}.png` : null,
-        channelId:   vs.channelId,
-        channelName: vs.channel?.name || null,
-        streaming:   vs.streaming,
-        video:       vs.selfVideo,
+    guilds.forEach(guild => {
+      guild.voiceStates.cache.forEach((vs) => {
+        if (!vs.channelId) return;
+        members.push({
+          userId:      vs.member?.id,
+          username:    vs.member?.user?.username,
+          globalName:  vs.member?.user?.globalName || vs.member?.user?.username,
+          avatar:      vs.member?.user?.avatar ? `https://cdn.discordapp.com/avatars/${vs.member.id}/${vs.member.user.avatar}.png` : null,
+          channelId:   vs.channelId,
+          channelName: vs.channel?.name || null,
+          streaming:   vs.streaming,
+          video:       vs.selfVideo,
+        });
       });
     });
     await fetch(`${WORKER_URL}/voice-snapshot`, {
