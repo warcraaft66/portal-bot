@@ -20,7 +20,6 @@ const client = new Client({
   ],
 });
 
-// ─── HELPER: get leaderboard rank for a user ───
 async function getLeaderboardRank(userId) {
   try {
     const res = await fetch(`${WORKER_URL}/leaderboard`);
@@ -29,9 +28,7 @@ async function getLeaderboardRank(userId) {
     const rank = data.entries.findIndex(e => e.userId === userId);
     if (rank === -1) return null;
     return { rank: rank + 1, total: data.entries.length };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function rankLabel(rank) {
@@ -41,7 +38,6 @@ function rankLabel(rank) {
   return `${suffix} of ${rank.total}`;
 }
 
-// ─── CLOCK IN / OUT ───
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
   if (message.guildId !== GUILD_ID) return;
@@ -58,9 +54,7 @@ client.on(Events.MessageCreate, async (message) => {
         userId: user.id,
         username: user.username,
         globalName: user.globalName || user.username,
-        avatar: user.avatar
-          ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`
-          : null,
+        avatar: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` : null,
       }),
     });
     const data = await res.json();
@@ -75,9 +69,7 @@ client.on(Events.MessageCreate, async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
-    // Fetch rank after clocking in
     const rank = await getLeaderboardRank(user.id);
-
     const embed = new EmbedBuilder()
       .setColor(0x00c864)
       .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
@@ -113,9 +105,7 @@ client.on(Events.MessageCreate, async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
-    // Fetch rank after clocking out (totals now updated)
     const rank = await getLeaderboardRank(user.id);
-
     const embed = new EmbedBuilder()
       .setColor(0xd4001a)
       .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
@@ -137,7 +127,6 @@ client.on(Events.MessageCreate, async (message) => {
   if (cmd === '!mytime') {
     const res = await fetch(`${WORKER_URL}/clock-history?userId=${user.id}`);
     const data = await res.json();
-
     const rank = await getLeaderboardRank(user.id);
 
     const embed = new EmbedBuilder()
@@ -180,7 +169,6 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// ─── POST TO LOG CHANNEL ───
 async function postToLogChannel(guild, embed) {
   if (!LOG_CHANNEL_ID) return;
   try {
@@ -189,14 +177,12 @@ async function postToLogChannel(guild, embed) {
   } catch {}
 }
 
-// ─── VOICE STATE TRACKING ───
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   const userId     = newState.member?.id || oldState.member?.id;
   const username   = newState.member?.user?.username || oldState.member?.user?.username;
   const globalName = newState.member?.user?.globalName || username;
   const avatar     = newState.member?.user?.avatar
-    ? `https://cdn.discordapp.com/avatars/${userId}/${newState.member.user.avatar}.png`
-    : null;
+    ? `https://cdn.discordapp.com/avatars/${userId}/${newState.member.user.avatar}.png` : null;
 
   if (!userId) return;
 
@@ -223,17 +209,13 @@ async function postVoiceState(payload) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-  } catch (e) {
-    console.error('Failed to post voice state:', e);
-  }
+  } catch (e) { console.error('Failed to post voice state:', e); }
 }
 
-// ─── PERIODIC VOICE SNAPSHOT ───
 async function syncVoiceSnapshot() {
   try {
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) return;
-
     const members = [];
     guild.voiceStates.cache.forEach((vs) => {
       if (!vs.channelId) return;
@@ -242,27 +224,21 @@ async function syncVoiceSnapshot() {
         userId:      vs.member?.id,
         username:    vs.member?.user?.username,
         globalName:  vs.member?.user?.globalName || vs.member?.user?.username,
-        avatar:      vs.member?.user?.avatar
-          ? `https://cdn.discordapp.com/avatars/${vs.member.id}/${vs.member.user.avatar}.png`
-          : null,
+        avatar:      vs.member?.user?.avatar ? `https://cdn.discordapp.com/avatars/${vs.member.id}/${vs.member.user.avatar}.png` : null,
         channelId:   vs.channelId,
         channelName: vs.channel?.name || null,
         streaming:   vs.streaming,
         video:       vs.selfVideo,
       });
     });
-
     await fetch(`${WORKER_URL}/voice-snapshot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ members }),
     });
-  } catch (e) {
-    console.error('Snapshot sync failed:', e);
-  }
+  } catch (e) { console.error('Snapshot sync failed:', e); }
 }
 
-// ─── BOT READY ───
 client.once(Events.ClientReady, () => {
   console.log(`✅ Bot ready as ${client.user.tag}`);
   client.user.setPresence({
@@ -275,7 +251,6 @@ client.once(Events.ClientReady, () => {
 
 client.login(process.env.DISCORD_TOKEN);
 
-// ─── HELPERS ───
 function formatMins(mins) {
   if (!mins || mins < 1) return '0 min';
   if (mins < 60) return `${mins} min`;
