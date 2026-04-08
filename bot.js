@@ -7,7 +7,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const WORKER_URL       = process.env.WORKER_URL;
 const GUILD_ID         = process.env.GUILD_ID;
 const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
-const LOG_CHANNEL_ID   = process.env.LOG_CHANNEL_ID; // optional: set in Railway vars to post embeds to a specific channel
+const LOG_CHANNEL_ID   = process.env.LOG_CHANNEL_ID;
 
 const client = new Client({
   intents: [
@@ -148,7 +148,7 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// ─── POST TO LOG CHANNEL (if LOG_CHANNEL_ID is set) ───
+// ─── POST TO LOG CHANNEL ───
 async function postToLogChannel(guild, embed) {
   if (!LOG_CHANNEL_ID) return;
   try {
@@ -230,8 +230,13 @@ async function syncVoiceSnapshot() {
   }
 }
 
+// ─── BOT READY ───
 client.once(Events.ClientReady, () => {
   console.log(`✅ Bot ready as ${client.user.tag}`);
+  client.user.setPresence({
+    activities: [{ name: '!clockin / !clockout', type: 2 }],
+    status: 'online',
+  });
   setInterval(syncVoiceSnapshot, 30000);
   syncVoiceSnapshot();
 });
