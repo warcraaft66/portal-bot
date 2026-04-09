@@ -20,9 +20,11 @@ async function getLeaderboardRank(userId) {
     const res = await fetch(`${WORKER_URL}/leaderboard`);
     const data = await res.json();
     if (!data.entries || !data.entries.length) return null;
-    const rank = data.entries.findIndex(e => e.userId === userId);
+    // FIX: rank is based on combined time, matching the worker sort
+    const sorted = [...data.entries].sort((a, b) => (b.totalMins + b.watchMins) - (a.totalMins + a.watchMins));
+    const rank = sorted.findIndex(e => e.userId === userId);
     if (rank === -1) return null;
-    return { rank: rank + 1, total: data.entries.length };
+    return { rank: rank + 1, total: sorted.length };
   } catch (e) {
     console.error('getLeaderboardRank error:', e);
     return null;
@@ -34,6 +36,13 @@ function rankLabel(rank) {
   const medals = { 1: '🥇', 2: '🥈', 3: '🥉' };
   const suffix = rank.rank <= 3 ? medals[rank.rank] : `#${rank.rank}`;
   return `${suffix} of ${rank.total}`;
+}
+
+function formatMins(mins) {
+  if (!mins || mins < 1) return '0 min';
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
 client.on(Events.MessageCreate, async (message) => {
@@ -173,9 +182,13 @@ client.on(Events.MessageCreate, async (message) => {
       }
 
       const medals = ['🥇', '🥈', '🥉'];
+      // FIX: show combined totalMins + watchMins
       const lines = data.entries
         .slice(0, 10)
-        .map((e, i) => `${medals[i] || `${i + 1}.`} **${e.globalName || e.username}** — ${formatMins(e.totalMins)}${e.clockedIn ? ' 🟢' : ''}`);
+        .map((e, i) => {
+          const combined = (e.totalMins || 0) + (e.watchMins || 0);
+          return `${medals[i] || `${i + 1}.`} **${e.globalName || e.username}** — ${formatMins(combined)}${e.clockedIn ? ' 🟢' : ''}`;
+        });
 
       const embed = new EmbedBuilder()
         .setColor(0xf5c842)
@@ -271,10 +284,3 @@ client.once(Events.ClientReady, () => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-
-function formatMins(mins) {
-  if (!mins || mins < 1) return '0 min';
-  if (mins < 60) return `${mins} min`;
-  const h = Math.floor(mins / 60), m = mins % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
