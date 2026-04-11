@@ -1,10 +1,8 @@
 const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
-const WORKER_URL       = process.env.WORKER_URL;
-const LOG_CHANNEL_ID   = process.env.LOG_CHANNEL_ID;
-const BOT_SECRET       = process.env.BOT_SECRET;
-const WHITELIST_ROLE   = '1491896248737726695';
+const WORKER_URL     = process.env.WORKER_URL;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 
 const client = new Client({
   intents: [
@@ -15,7 +13,7 @@ const client = new Client({
   ],
 });
 
-// In-memory leaderboard cache — 5 min TTL to avoid hammering KV
+// In-memory leaderboard cache — 5 min TTL
 let cachedLeaderboard = null;
 let cachedLeaderboardAt = 0;
 const LB_CACHE_TTL = 5 * 60 * 1000;
@@ -65,97 +63,8 @@ function formatMins(mins) {
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
-  const content = message.content.trim();
-  const cmd = content.toLowerCase();
+  const cmd = message.content.trim().toLowerCase();
   const user = message.author;
-
-  // ── WHITELIST ADD ──
-  if (cmd.startsWith('!whitelist ')) {
-    const hasRole = message.member?.roles.cache.has(WHITELIST_ROLE);
-    if (!hasRole) {
-      return message.reply({ embeds: [
-        new EmbedBuilder()
-          .setColor(0xff4455)
-          .setTitle('❌ No Permission')
-          .setDescription('You do not have permission to use this command.')
-          .setTimestamp()
-      ]});
-    }
-
-    const mentionMatch = content.match(/<@!?(\d+)>/);
-    const idMatch = content.match(/!whitelist\s+(\d+)/i);
-    const targetId = mentionMatch ? mentionMatch[1] : (idMatch ? idMatch[1] : null);
-
-    if (!targetId) return message.reply('Usage: `!whitelist @user` or `!whitelist <userId>`');
-
-    try {
-      const res = await fetch(`${WORKER_URL}/whitelist-add`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: targetId, botSecret: BOT_SECRET }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        return message.reply({ embeds: [
-          new EmbedBuilder()
-            .setColor(0x00c864)
-            .setTitle('✅ Whitelisted')
-            .setDescription(`<@${targetId}> has been granted access to the portal.`)
-            .setTimestamp()
-            .setFooter({ text: `Whitelisted by ${user.globalName || user.username}` })
-        ]});
-      } else {
-        return message.reply('Something went wrong: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e) {
-      console.error('Whitelist error:', e);
-      return message.reply('Something went wrong. Check the logs.');
-    }
-  }
-
-  // ── WHITELIST REMOVE ──
-  if (cmd.startsWith('!unwhitelist ')) {
-    const hasRole = message.member?.roles.cache.has(WHITELIST_ROLE);
-    if (!hasRole) {
-      return message.reply({ embeds: [
-        new EmbedBuilder()
-          .setColor(0xff4455)
-          .setTitle('❌ No Permission')
-          .setDescription('You do not have permission to use this command.')
-          .setTimestamp()
-      ]});
-    }
-
-    const mentionMatch = content.match(/<@!?(\d+)>/);
-    const idMatch = content.match(/!unwhitelist\s+(\d+)/i);
-    const targetId = mentionMatch ? mentionMatch[1] : (idMatch ? idMatch[1] : null);
-
-    if (!targetId) return message.reply('Usage: `!unwhitelist @user` or `!unwhitelist <userId>`');
-
-    try {
-      const res = await fetch(`${WORKER_URL}/whitelist-remove`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: targetId, botSecret: BOT_SECRET }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        return message.reply({ embeds: [
-          new EmbedBuilder()
-            .setColor(0xd4001a)
-            .setTitle('🚫 Removed from Whitelist')
-            .setDescription(`<@${targetId}> has been removed from portal access.`)
-            .setTimestamp()
-            .setFooter({ text: `Removed by ${user.globalName || user.username}` })
-        ]});
-      } else {
-        return message.reply('Something went wrong: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e) {
-      console.error('Unwhitelist error:', e);
-      return message.reply('Something went wrong. Check the logs.');
-    }
-  }
 
   // ── CLOCK IN ──
   if (cmd === '!clockin') {
