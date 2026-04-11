@@ -1,30 +1,47 @@
 const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
-const WORKER_URL     = process.env.WORKER_URL;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
+const WORKER_URL       = process.env.WORKER_URL;
+const LOG_CHANNEL_ID   = process.env.LOG_CHANNEL_ID;
+const BOT_SECRET       = process.env.BOT_SECRET;
+const WHITELIST_ROLE   = '1491896248737726695';
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildPresences,
   ],
 });
 
+// In-memory leaderboard cache — 5 min TTL to avoid hammering KV
+let cachedLeaderboard = null;
+let cachedLeaderboardAt = 0;
+const LB_CACHE_TTL = 5 * 60 * 1000;
+
+async function getLeaderboard() {
+  const now = Date.now();
+  if (cachedLeaderboard && now - cachedLeaderboardAt < LB_CACHE_TTL) return cachedLeaderboard;
+  const res = await fetch(`${WORKER_URL}/leaderboard`);
+  const data = await res.json();
+  cachedLeaderboard = data;
+  cachedLeaderboardAt = now;
+  return data;
+}
+
+function bustLocalLbCache() {
+  cachedLeaderboard = null;
+  cachedLeaderboardAt = 0;
+}
+
 async function getLeaderboardRank(userId) {
   try {
-    const res = await fetch(`${WORKER_URL}/leaderboard`);
-    const data = await res.json();
+    const data = await getLeaderboard();
     if (!data.entries || !data.entries.length) return null;
-    // FIX: rank is based on combined time, matching the worker sort
-    const sorted = [...data.entries].sort((a, b) => (b.totalMins + b.watchMins) - (a.totalMins + a.watchMins));
-    const rank = sorted.findIndex(e => e.userId === userId);
+    const rank = data.entries.findIndex(e => e.userId === userId);
     if (rank === -1) return null;
-    return { rank: rank + 1, total: sorted.length };
+    return { rank: rank + 1, total: data.entries.length };
   } catch (e) {
     console.error('getLeaderboardRank error:', e);
     return null;
@@ -48,14 +65,100 @@ function formatMins(mins) {
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
-  const cmd = message.content.trim().toLowerCase();
+  const content = message.content.trim();
+  const cmd = content.toLowerCase();
   const user = message.author;
 
-  console.log(`Message received: "${cmd}" from ${user.username}`);
+  // ── WHITELIST ADD ──
+  if (cmd.startsWith('!whitelist ')) {
+    const hasRole = message.member?.roles.cache.has(WHITELIST_ROLE);
+    if (!hasRole) {
+      return message.reply({ embeds: [
+        new EmbedBuilder()
+          .setColor(0xff4455)
+          .setTitle('❌ No Permission')
+          .setDescription('You do not have permission to use this command.')
+          .setTimestamp()
+      ]});
+    }
+
+    const mentionMatch = content.match(/<@!?(\d+)>/);
+    const idMatch = content.match(/!whitelist\s+(\d+)/i);
+    const targetId = mentionMatch ? mentionMatch[1] : (idMatch ? idMatch[1] : null);
+
+    if (!targetId) return message.reply('Usage: `!whitelist @user` or `!whitelist <userId>`');
+
+    try {
+      const res = await fetch(`${WORKER_URL}/whitelist-add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: targetId, botSecret: BOT_SECRET }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        return message.reply({ embeds: [
+          new EmbedBuilder()
+            .setColor(0x00c864)
+            .setTitle('✅ Whitelisted')
+            .setDescription(`<@${targetId}> has been granted access to the portal.`)
+            .setTimestamp()
+            .setFooter({ text: `Whitelisted by ${user.globalName || user.username}` })
+        ]});
+      } else {
+        return message.reply('Something went wrong: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e) {
+      console.error('Whitelist error:', e);
+      return message.reply('Something went wrong. Check the logs.');
+    }
+  }
+
+  // ── WHITELIST REMOVE ──
+  if (cmd.startsWith('!unwhitelist ')) {
+    const hasRole = message.member?.roles.cache.has(WHITELIST_ROLE);
+    if (!hasRole) {
+      return message.reply({ embeds: [
+        new EmbedBuilder()
+          .setColor(0xff4455)
+          .setTitle('❌ No Permission')
+          .setDescription('You do not have permission to use this command.')
+          .setTimestamp()
+      ]});
+    }
+
+    const mentionMatch = content.match(/<@!?(\d+)>/);
+    const idMatch = content.match(/!unwhitelist\s+(\d+)/i);
+    const targetId = mentionMatch ? mentionMatch[1] : (idMatch ? idMatch[1] : null);
+
+    if (!targetId) return message.reply('Usage: `!unwhitelist @user` or `!unwhitelist <userId>`');
+
+    try {
+      const res = await fetch(`${WORKER_URL}/whitelist-remove`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: targetId, botSecret: BOT_SECRET }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        return message.reply({ embeds: [
+          new EmbedBuilder()
+            .setColor(0xd4001a)
+            .setTitle('🚫 Removed from Whitelist')
+            .setDescription(`<@${targetId}> has been removed from portal access.`)
+            .setTimestamp()
+            .setFooter({ text: `Removed by ${user.globalName || user.username}` })
+        ]});
+      } else {
+        return message.reply('Something went wrong: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e) {
+      console.error('Unwhitelist error:', e);
+      return message.reply('Something went wrong. Check the logs.');
+    }
+  }
 
   // ── CLOCK IN ──
   if (cmd === '!clockin') {
-    console.log(`Clocking in ${user.username}`);
     try {
       const res = await fetch(`${WORKER_URL}/clockin`, {
         method: 'POST',
@@ -68,24 +171,24 @@ client.on(Events.MessageCreate, async (message) => {
         }),
       });
       const data = await res.json();
-      console.log('Clockin response:', JSON.stringify(data));
 
       if (data.alreadyClockedIn) {
-        const embed = new EmbedBuilder()
-          .setColor(0xf5c842)
-          .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-          .setTitle('⚠️ Already Clocked In')
-          .setDescription('You are already clocked in. Use `!clockout` to stop your session.')
-          .setTimestamp();
-        return message.reply({ embeds: [embed] });
+        return message.reply({ embeds: [
+          new EmbedBuilder()
+            .setColor(0xf5c842)
+            .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+            .setTitle('⚠️ Already Clocked In')
+            .setDescription('You are already clocked in. Use `!clockout` to stop your session.')
+            .setTimestamp()
+        ]});
       }
 
       const rank = await getLeaderboardRank(user.id);
       const embed = new EmbedBuilder()
         .setColor(0x00c864)
         .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-        .setTitle('✅ Successfully Clocked In')
-        .setDescription('Your training session has started. Type `!clockout` when you\'re done.')
+        .setTitle('✅ Clocked In')
+        .setDescription('Session started. Type `!clockout` when you\'re done.')
         .addFields(
           { name: '📊 All-Time Total', value: formatMins(data.previousTotal), inline: true },
           { name: '🏆 Leaderboard Rank', value: rankLabel(rank), inline: true },
@@ -103,7 +206,6 @@ client.on(Events.MessageCreate, async (message) => {
 
   // ── CLOCK OUT ──
   if (cmd === '!clockout') {
-    console.log(`Clocking out ${user.username}`);
     try {
       const res = await fetch(`${WORKER_URL}/clockout`, {
         method: 'POST',
@@ -111,19 +213,21 @@ client.on(Events.MessageCreate, async (message) => {
         body: JSON.stringify({ userId: user.id }),
       });
       const data = await res.json();
-      console.log('Clockout response:', JSON.stringify(data));
 
       if (!data.wasClockedIn) {
-        const embed = new EmbedBuilder()
-          .setColor(0xff4455)
-          .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
-          .setTitle('❌ Not Clocked In')
-          .setDescription('You weren\'t clocked in. Use `!clockin` to start a session.')
-          .setTimestamp();
-        return message.reply({ embeds: [embed] });
+        return message.reply({ embeds: [
+          new EmbedBuilder()
+            .setColor(0xff4455)
+            .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
+            .setTitle('❌ Not Clocked In')
+            .setDescription('You weren\'t clocked in. Use `!clockin` to start a session.')
+            .setTimestamp()
+        ]});
       }
 
+      bustLocalLbCache();
       const rank = await getLeaderboardRank(user.id);
+
       const embed = new EmbedBuilder()
         .setColor(0xd4001a)
         .setAuthor({ name: user.globalName || user.username, iconURL: user.displayAvatarURL() })
@@ -174,21 +278,17 @@ client.on(Events.MessageCreate, async (message) => {
   // ── LEADERBOARD ──
   if (cmd === '!leaderboard') {
     try {
-      const res = await fetch(`${WORKER_URL}/leaderboard`);
-      const data = await res.json();
+      bustLocalLbCache();
+      const data = await getLeaderboard();
 
       if (!data.entries || !data.entries.length) {
         return message.reply('No data yet — be the first to `!clockin`!');
       }
 
       const medals = ['🥇', '🥈', '🥉'];
-      // FIX: show combined totalMins + watchMins
       const lines = data.entries
         .slice(0, 10)
-        .map((e, i) => {
-          const combined = (e.totalMins || 0) + (e.watchMins || 0);
-          return `${medals[i] || `${i + 1}.`} **${e.globalName || e.username}** — ${formatMins(combined)}${e.clockedIn ? ' 🟢' : ''}`;
-        });
+        .map((e, i) => `${medals[i] || `${i + 1}.`} **${e.globalName || e.username}** — ${formatMins(e.totalMins)}${e.clockedIn ? ' 🟢' : ''}`);
 
       const embed = new EmbedBuilder()
         .setColor(0xf5c842)
@@ -213,74 +313,12 @@ async function postToLogChannel(guild, embed) {
   } catch {}
 }
 
-client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
-  const userId     = newState.member?.id || oldState.member?.id;
-  const username   = newState.member?.user?.username || oldState.member?.user?.username;
-  const globalName = newState.member?.user?.globalName || username;
-  const avatar     = newState.member?.user?.avatar
-    ? `https://cdn.discordapp.com/avatars/${userId}/${newState.member.user.avatar}.png` : null;
-
-  if (!userId) return;
-
-  const channelId   = newState.channelId;
-  const isStreaming = newState.streaming;
-  const isVideo     = newState.selfVideo;
-  const channelName = newState.channel?.name || null;
-
-  if (!oldState.channelId && newState.channelId) {
-    await postVoiceState({ userId, username, globalName, avatar, channelId, channelName, streaming: isStreaming, video: isVideo, action: 'join' });
-  } else if (oldState.channelId && !newState.channelId) {
-    await postVoiceState({ userId, username, globalName, avatar, channelId: null, channelName: null, streaming: false, video: false, action: 'leave' });
-  } else if (newState.channelId) {
-    await postVoiceState({ userId, username, globalName, avatar, channelId, channelName, streaming: isStreaming, video: isVideo, action: 'update' });
-  }
-});
-
-async function postVoiceState(payload) {
-  try {
-    await fetch(`${WORKER_URL}/voice-state`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) { console.error('Voice state error:', e); }
-}
-
-async function syncVoiceSnapshot() {
-  try {
-    const guilds = client.guilds.cache;
-    const members = [];
-    guilds.forEach(guild => {
-      guild.voiceStates.cache.forEach((vs) => {
-        if (!vs.channelId) return;
-        members.push({
-          userId:      vs.member?.id,
-          username:    vs.member?.user?.username,
-          globalName:  vs.member?.user?.globalName || vs.member?.user?.username,
-          avatar:      vs.member?.user?.avatar ? `https://cdn.discordapp.com/avatars/${vs.member.id}/${vs.member.user.avatar}.png` : null,
-          channelId:   vs.channelId,
-          channelName: vs.channel?.name || null,
-          streaming:   vs.streaming,
-          video:       vs.selfVideo,
-        });
-      });
-    });
-    await fetch(`${WORKER_URL}/voice-snapshot`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ members }),
-    });
-  } catch (e) { console.error('Snapshot sync failed:', e); }
-}
-
 client.once(Events.ClientReady, () => {
   console.log(`✅ Bot ready as ${client.user.tag}`);
   client.user.setPresence({
     activities: [{ name: '!clockin / !clockout', type: 2 }],
     status: 'online',
   });
-  setInterval(syncVoiceSnapshot, 30000);
-  syncVoiceSnapshot();
 });
 
 client.login(process.env.DISCORD_TOKEN);
